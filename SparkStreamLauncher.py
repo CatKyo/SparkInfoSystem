@@ -1,40 +1,44 @@
-#encoding=utf-8
+
 import os
 import sys
-# import random
 import json
+from json import dump
 import jieba
+import zmq
+# import random
 # import shapefile
 # import time
 # from socketIO_client import SocketIO, LoggingNamespace
+from jieba import analyse
 from pyspark import SparkContext
 from pyspark.streaming import StreamingContext
+from hdfs import InsecureClient
+import hdfs
 
-# shpTw = open("./map/Town_MOI_1041215.shp", "rb")
-# dbfTw = open("./map/Town_MOI_1041215.dbf", "rb")
-# r = shapefile.Reader(shp=shpTw, dbf=dbfTw)
-# records = r.records()
-# shapeRec = r.shapeRecords()
-
-# def saveFile(time, rdd):
-#     cnt = rdd.count()
-#     if cnt != 0:
-#         path = "/tmp/" + str(time).replace(":", "").replace(" ","-")
-#         print("-------------------------------------------")
-#         print("Time: %s" % time)
-#         print("-------------------------------------------")
-#         print("cut result save in: " + path)
-#         rdd.saveAsTextFile(path)
+def saveJsonFileToHDFS(jsonFile):
+    if jsonFile is not None:
+        jsonFile["HDFSurl"] = "/tmp/" + jsonFile["Date"] + jsonFile["Title"] + ".txt"
+        os.system(("echo '%s' | hadoop fs -put - '" + jsonFile["HDFSurl"] + "'") % (json.dumps(jsonFile)))
+        print("savePath: " + jsonFile["HDFSurl"])
 
 def jsonFileTranslate(rdd):
     cnt = rdd.count()
     if cnt != 0:
-        for i in range(cnt):
-            rdd_list = rdd.take(i+1)
-            for i in rdd_list:
-                j_file = json.loads(i)
-                print i
+        for rd in rdd.collect():
+            j_file = json.loads(rd)
+            j_file["KeyWord"] = analyse.textrank(j_file["Text"])
+            j_file["SplitText"] = " ".join(jieba.cut_for_search(j_file["Text"]))
+            j_file["TitleKey"] = analyse.textrank(j_file["Title"])
+            print(j_file["Title"])
+            print(j_file["KeyWord"])
+            saveJsonFileToHDFS(j_file)
+            # sendjson(j_file)
 
+def sendjson(json_file):
+    context = zmq.Context()
+    zmq_socket = context.socket(zmq.PUSH)
+    zmq_socket.bind("tcp://192.168.4.213:5557")
+    zmq_socket.send_json(json_file)
 
 # def sendLocation(rdd):
 #     cnt = rdd.count()
@@ -48,6 +52,12 @@ def jsonFileTranslate(rdd):
 #                     socketIO.emit(location)
 #                     socketIO.wait_for_callbacks(seconds=1)
 #         print ("Finish")
+
+# shpTw = open("./map/Town_MOI_1041215.shp", "rb")
+# dbfTw = open("./map/Town_MOI_1041215.dbf", "rb")
+# r = shapefile.Reader(shp=shpTw, dbf=dbfTw)
+# records = r.records()
+# shapeRec = r.shapeRecords()
 
 # def locationHashSereach(locationString):
 #
@@ -64,11 +74,12 @@ def jsonFileTranslate(rdd):
 
 if __name__ == '__main__':
     os.environ['SPARK_HOME'] = "/usr/lib/spark"
+    os.environ["PYSPARK_PYTHON"] = "/usr/local/bin/python3"
     sys.path.append("/home/kyo/spark-1.6.1-bin-hadoop2.6/python")
 
     # Create a local StreamingContext with two working thread and batch interval of 1 second
-    # sc = SparkContext("spark://192.168.4.213:7077", "NetworkWordCount")
-    sc = SparkContext("local[2]", "NetworkWordCount")
+    sc = SparkContext("spark://192.168.4.213:7077", "DataInfoSys")
+    # sc = SparkContext("local[2]", "DataInfoSys")
     sc.setLogLevel("WARN")
     ssc = StreamingContext(sc, 3)
 
@@ -76,13 +87,9 @@ if __name__ == '__main__':
     lines = ssc.socketTextStream("192.168.4.213", 9999)
 
     # Split each line into words
-
-
     raw_words = lines.flatMap(lambda line: jieba.cut_for_search(line))
     words = raw_words.filter(lambda line: line not in " ")
 
-    # words.foreachRDD(sendLocation)
-    # words.foreachRDD(saveFile)
     lines.foreachRDD(jsonFileTranslate)
 
     # Count each word in each batch
